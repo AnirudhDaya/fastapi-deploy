@@ -1,0 +1,28 @@
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fastapi-deploy-cli"
+version = "0.1.0"
+description = "CLI tool for setting up deployment of FastAPI applications"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+dependencies = [
+    "click>=8.1.8",
+    "pyyaml>=6.0.2",
+    "questionary>=2.1.0",
+    "requests>=2.32.3",
+    "rich>=14.0.0",
+]
+
+[project.scripts]
+fastapi-deploy = "fastapi_deploy_cli.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fastapi_deploy_cli"]
