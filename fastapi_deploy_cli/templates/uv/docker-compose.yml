@@ -4,21 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - BUILD_ENV=${BUILD_ENV:-production}
-        - APP_NAME=${APP_NAME}
-        - DEBUG_MODE=${DEBUG_MODE}
-        - API_VERSION=${API_VERSION}
-        - ENVIRONMENT=${ENVIRONMENT}
-        - PORT=${PORT}
     image: fastapi-app:latest
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
-      - APP_NAME=${APP_NAME}
-      - DEBUG_MODE=${DEBUG_MODE}
-      - API_VERSION=${API_VERSION}
-      - ENVIRONMENT=${ENVIRONMENT}
-      - PORT=${PORT}
     ports:
       - "8001:8000"
     networks:

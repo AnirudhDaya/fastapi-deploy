@@ -1,28 +1,39 @@
 """
 File operations for FastAPI Deploy CLI.
 """
-import os
-import shutil
+import re
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from fastapi_deploy_cli.config import Config
+from fastapi_deploy_cli.env_handler import EnvHandler
 
 class FileOps:
     """Handles file operations for deployment setup."""
     
-    def __init__(self, package_manager: str = "uv", env_path: str = ".env"):
+    def __init__(self, package_manager: str = "uv", env_path: str = ".env", github_variables: List[str] = None):
         """
         Initialize file operations.
         
         Args:
             package_manager: Package manager to use ('pip' or 'uv')
-            env_path: Path to .env file (not parsed, just copied)
+            env_path: Path to .env file
+            github_variables: List of variables added to GitHub secrets
         """
         self.package_manager = package_manager
         self.env_path = env_path
         self.config = Config()
         self.templates_dir = self.config.get_templates_dir()
+        self.github_variables = github_variables or []
+        
+        # Load environment variables if file exists
+        self.env_handler = EnvHandler(env_path)
+        
+        # Define essential deployment variables that are not to be modified
+        self.deployment_vars = ["SERVER_HOST", "SERVER_USER", "SSH_PRIVATE_KEY", "PAT"]
+        
+        # Get additional variables (excluding deployment vars)
+        self.additional_vars = [var for var in self.github_variables if var not in self.deployment_vars]
         
         # Ensure the .github/workflows directory exists
         self.github_dir = Path(".github")
@@ -33,26 +44,6 @@ class FileOps:
         
         if not self.workflows_dir.exists():
             self.workflows_dir.mkdir(exist_ok=True)
-    
-    def _copy_template(self, template_name: str, target_path: Path) -> bool:
-        """
-        Copy template file to target path without modification.
-        
-        Args:
-            template_name: Template file name
-            target_path: Target file path
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        template_path = self._get_template_path(template_name)
-        
-        try:
-            shutil.copy(template_path, target_path)
-            return True
-        except Exception as e:
-            print(f"Error copying template {template_name}: {e}")
-            return False
     
     def _get_template_path(self, file_name: str) -> Path:
         """
@@ -66,30 +57,301 @@ class FileOps:
         """
         return self.templates_dir / self.package_manager / file_name
     
+    def _modify_dockerfile(self, content: str) -> str:
+        """
+        Modify Dockerfile content to include all environment variables.
+        
+        Args:
+            content: Original Dockerfile content
+            
+        Returns:
+            Modified Dockerfile content
+        """
+        if not self.additional_vars:
+            return content
+        
+        # Create ARG declarations
+        arg_declarations = "\n".join([f"ARG {var}" for var in self.additional_vars])
+        
+        # Create ENV variables
+        env_vars = " \\\n    ".join([f"{var}=${var}" for var in self.additional_vars])
+        
+        if self.package_manager == "uv":
+            # Add ARGs to initial build stage
+            if "# Define build arguments with default values" in content:
+                # Find the position to insert the ARGs
+                args_index = content.find("# Define build arguments with default values")
+                args_end_index = content.find("\n", args_index)
+                
+                # Insert standard args and additional args after the comment line
+                new_content = content[:args_end_index+1] + "\n" + arg_declarations + "\n" + content[args_end_index+1:]
+                content = new_content
+                    
+            # Add ENV variables to initial build stage
+            if "# Set build-time environment variables" in content:
+                # Find the position to insert the ENV variables
+                env_index = content.find("# Set build-time environment variables")
+                env_end_index = content.find("\n", env_index)
+                
+                # Find where to insert ENV declaration
+                if "ENV" in content[env_end_index:env_end_index + 100]:
+                    # ENV already exists, we'll modify it
+                    env_start = content.find("ENV", env_end_index)
+                    env_end = content.find("\n\n", env_start)
+                    if env_end == -1:  # If not found, search for next section
+                        env_end = content.find("\n#", env_start)
+                    if env_end == -1:  # If still not found, go to end of content
+                        env_end = len(content)
+                        
+                    # Create new ENV content
+                    env_content = content[env_start:env_end].strip()
+                    new_env_content = env_content + " \\\n    " + env_vars
+                    
+                    # Replace old ENV with new one
+                    content = content.replace(env_content, new_env_content)
+                else:
+                    # No ENV exists, add new one
+                    new_content = content[:env_end_index+1] + "\nENV " + env_vars + "\n" + content[env_end_index+1:]
+                    content = new_content
+                    
+            # Add ARGs to final stage
+            if "# Define build arguments again for the final stage" in content:
+                # Find the position to insert the ARGs
+                args_index = content.find("# Define build arguments again for the final stage")
+                args_end_index = content.find("\n", args_index)
+                
+                # Insert standard args and additional args after the comment line
+                new_content = content[:args_end_index+1] + "\n" + arg_declarations + "\n" + content[args_end_index+1:]
+                content = new_content
+            
+            # Add ENV variables to final stage
+            if "# Set environment variables for runtime" in content:
+                # Find the position to insert the ENV variables
+                env_index = content.find("# Set environment variables for runtime")
+                env_end_index = content.find("\n", env_index)
+                
+                # Find where to insert ENV declaration
+                if "ENV" in content[env_end_index:env_end_index + 100]:
+                    # ENV already exists, we'll modify it
+                    env_start = content.find("ENV", env_end_index)
+                    env_end = content.find("\n\n", env_start)
+                    if env_end == -1:  # If not found, search for next section
+                        env_end = content.find("\n#", env_start)
+                        if env_end == -1:  # If still not found, search for WORKDIR
+                            env_end = content.find("WORKDIR", env_start)
+                    if env_end == -1:  # If still not found, go to end of content
+                        env_end = len(content)
+                        
+                    # Create new ENV content
+                    env_content = content[env_start:env_end].strip()
+
+                    # Check for and fix double backslash
+                    if "\\ \\" in env_content:
+                        env_content = env_content.replace("\\ \\", "\\")
+                    
+                    new_env_content = env_content + " \\\n    " + env_vars
+                    
+                    # Replace old ENV with new one
+                    content = content.replace(env_content, new_env_content)
+                else:
+                    # No ENV exists, add new one
+                    new_content = content[:env_end_index+1] + "\nENV " + env_vars + "\n" + content[env_end_index+1:]
+                    content = new_content
+                    
+        else:  # pip
+            # Add ARGs to define section
+            if "# Define build arguments with default values" in content:
+                # Find the position to insert the ARGs
+                args_index = content.find("# Define build arguments with default values")
+                args_end_index = content.find("\n", args_index)
+                
+                # Insert standard args and additional args after the comment line
+                new_content = content[:args_end_index+1] + "\n" + arg_declarations + "\n" + content[args_end_index+1:]
+                content = new_content
+                    
+            # Add ENV variables to build-time section
+            if "# Set build-time environment variables" in content:
+                # Find the position to insert the ENV variables
+                env_index = content.find("# Set build-time environment variables")
+                env_end_index = content.find("\n", env_index)
+                
+                # Find where to insert ENV declaration
+                if "ENV" in content[env_end_index:env_end_index + 100]:
+                    # ENV already exists, we'll modify it
+                    env_start = content.find("ENV", env_end_index)
+                    env_end = content.find("\n\n", env_start)
+                    if env_end == -1:  # If not found, search for next section
+                        env_end = content.find("\n#", env_start)
+                        if env_end == -1:  # If still not found, search for COPY
+                            env_end = content.find("COPY", env_start)
+                    if env_end == -1:  # If still not found, go to end of content
+                        env_end = len(content)
+                        
+                    # Create new ENV content
+                    env_content = content[env_start:env_end].strip()
+                    new_env_content = env_content + " \\\n    " + env_vars
+                    
+                    # Replace old ENV with new one
+                    content = content.replace(env_content, new_env_content)
+                else:
+                    # No ENV exists, add new one
+                    new_content = content[:env_end_index+1] + "\nENV " + env_vars + "\n" + content[env_end_index+1:]
+                    content = new_content
+        
+        return content
+    
+    def _modify_docker_compose(self, content: str) -> str:
+        """
+        Modify docker-compose.yml content to include all environment variables.
+        
+        Args:
+            content: Original docker-compose.yml content
+            
+        Returns:
+            Modified docker-compose.yml content
+        """
+        if not self.additional_vars:
+            return content
+            
+        # Add additional variables to build args
+        if "args:" in content:
+            args_pattern = r"(args:(?:\s*-[^\n]*)*)"
+            arg_lines = "\n" + "\n".join([f"        - {var}=${{{var}}}" for var in self.additional_vars])
+            
+            content = re.sub(
+                args_pattern,
+                f"\\1{arg_lines}",
+                content
+            )
+        
+        # Add additional variables to environment section
+        if "environment:" in content:
+            env_pattern = r"(environment:(?:\s*-[^\n]*)*)"
+            env_lines = "\n" + "\n".join([f"      - {var}=${{{var}}}" for var in self.additional_vars])
+            
+            content = re.sub(
+                env_pattern,
+                f"\\1{env_lines}",
+                content
+            )
+        
+        return content
+    
+    def _modify_workflow(self, content: str) -> str:
+        """
+        Modify GitHub Actions workflow content to include all environment variables.
+        
+        Args:
+            content: Original workflow content
+            
+        Returns:
+            Modified workflow content
+        """
+        if not self.additional_vars:
+            return content
+            
+        # Add environment variables to env section
+        if "env:" in content:
+            env_pattern = r"(env:(?:\s*[A-Z_]+:[^\n]*)*)"
+            env_lines = "\n" + "\n".join([f"          {var}: ${{{{ secrets.{var} }}}}" for var in self.additional_vars])
+            
+            content = re.sub(
+                env_pattern,
+                f"\\1{env_lines}",
+                content
+            )
+        
+        # Add variables to envs parameter
+        if "envs:" in content:
+            envs_pattern = r"(envs:\s*[^,\n]*(?:,[^,\n]*)*)"
+            additional_envs = "," + ",".join(self.additional_vars)
+            
+            content = re.sub(
+                envs_pattern,
+                f"\\1{additional_envs}",
+                content
+            )
+        
+        # Add export statements
+        if "# Export environment variables" in content:
+            export_pattern = r"(# Export environment variables\s*\n(?:\s*export [A-Z_]+=[^\n]*\n)*)"
+            export_lines = "\n".join([f'            export {var}="${{{var}}}"' for var in self.additional_vars])
+            
+            content = re.sub(
+                export_pattern,
+                f"\\1{export_lines}\n",
+                content
+            )
+        
+        # Add unset statements
+        if "# Clear environment variables" in content:
+            unset_pattern = r"(# Clear environment variables\s*\n(?:\s*unset [A-Z_]+\n)*)"
+            unset_lines = "\n".join([f"            unset {var}" for var in self.additional_vars])
+            
+            content = re.sub(
+                unset_pattern,
+                f"\\1{unset_lines}\n",
+                content
+            )
+        
+        return content
+    
+    def _copy_and_modify_template(self, template_name: str, target_path: Path, modifier_func=None) -> bool:
+        """
+        Copy template file to target path and modify if needed.
+        
+        Args:
+            template_name: Template file name
+            target_path: Target file path
+            modifier_func: Function to modify the template content
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        template_path = self._get_template_path(template_name)
+        
+        try:
+            # Read template content
+            with open(template_path, 'r') as f:
+                content = f.read()
+            
+            # Modify content if modifier function is provided
+            if modifier_func and self.additional_vars:
+                content = modifier_func(content)
+            
+            # Write content to target path
+            with open(target_path, 'w') as f:
+                f.write(content)
+            
+            return True
+        except Exception as e:
+            print(f"Error processing template {template_name}: {e}")
+            return False
+    
     def setup_dockerfile(self) -> bool:
         """
-        Set up Dockerfile.
+        Set up Dockerfile with all environment variables.
         
         Returns:
             True if successful, False otherwise
         """
-        return self._copy_template("Dockerfile", Path("Dockerfile"))
+        return self._copy_and_modify_template("Dockerfile", Path("Dockerfile"), self._modify_dockerfile)
     
     def setup_docker_compose(self) -> bool:
         """
-        Set up docker-compose.yml.
+        Set up docker-compose.yml with all environment variables.
         
         Returns:
             True if successful, False otherwise
         """
-        return self._copy_template("docker-compose.yml", Path("docker-compose.yml"))
+        return self._copy_and_modify_template("docker-compose.yml", Path("docker-compose.yml"), self._modify_docker_compose)
     
     def setup_github_workflow(self) -> bool:
         """
-        Set up GitHub Actions workflow file.
+        Set up GitHub Actions workflow file with all environment variables.
         
         Returns:
             True if successful, False otherwise
         """
         workflow_path = self.workflows_dir / "deploy.yml"
-        return self._copy_template("deploy.yml", workflow_path)
+        return self._copy_and_modify_template("deploy.yml", workflow_path, self._modify_workflow)

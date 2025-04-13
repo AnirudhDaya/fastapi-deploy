@@ -86,8 +86,7 @@ Required environment variables:
         console.print(f"[green]Found .env file at {env_path}[/green]")
         # Check if required variables are present
         missing_vars = env_handler.check_required_vars([
-            "SERVER_HOST", "SERVER_USER", "SSH_PRIVATE_KEY",
-            "APP_NAME", "DEBUG_MODE", "API_VERSION", "ENVIRONMENT", "PORT"
+            "SERVER_HOST", "SERVER_USER", "SSH_PRIVATE_KEY"
         ])
         
         if missing_vars:
@@ -129,8 +128,11 @@ Required environment variables:
     github_secrets = GithubSecrets()
     result = github_secrets.upload_secrets(repo, pat, env_path)
     
+    variables = []
     if result.get("success"):
         console.print("[green]Successfully added environment variables to GitHub secrets[/green]")
+        variables = github_secrets.get_environment_variables(result)
+        console.print(f"Variables added: [cyan]{', '.join(variables)}[/cyan]")
     else:
         console.print("[red]Failed to add environment variables to GitHub secrets[/red]")
         if "variables" in result:
@@ -140,12 +142,12 @@ Required environment variables:
     
     # Step 5: Setup deployment files
     console.print("\n[bold]Step 5:[/bold] Setting up deployment files")
-    file_ops = FileOps(package_manager, env_path)
+    file_ops = FileOps(package_manager, env_path, variables)
     
     # Create necessary files
-    file_ops.setup_dockerfile()
-    file_ops.setup_docker_compose()
-    file_ops.setup_github_workflow()
+    dockerfile_result = file_ops.setup_dockerfile()
+    compose_result = file_ops.setup_docker_compose()
+    workflow_result = file_ops.setup_github_workflow()
     
     # Complete
     console.print("\n[bold green]Setup Complete![/bold green]")
@@ -157,9 +159,9 @@ Required environment variables:
     console.print(f"🔗 GitHub repository: [cyan]{repo}[/cyan]")
     console.print(f"🔒 GitHub secrets uploaded: [cyan]{'✓' if result.get('success', False) else '✗'}[/cyan]")
     console.print(f"📦 Created deployment files:")
-    console.print(f"   - [cyan]Dockerfile[/cyan]")
-    console.print(f"   - [cyan]docker-compose.yml[/cyan]")
-    console.print(f"   - [cyan].github/workflows/deploy.yml[/cyan]")
+    console.print(f"   - [cyan]Dockerfile[/cyan] {'✓' if dockerfile_result else '✗'}")
+    console.print(f"   - [cyan]docker-compose.yml[/cyan] {'✓' if compose_result else '✗'}")
+    console.print(f"   - [cyan].github/workflows/deploy.yml[/cyan] {'✓' if workflow_result else '✗'}")
     
     # Next steps
     console.print("\n[bold]Next steps:[/bold]")
@@ -194,6 +196,7 @@ def update():
         console.print(f"[green]Found .env file at {env_path}[/green]")
     
     # Create file operations handler
+    # We'll pass an empty variables list - FileOps will handle the templates without additional vars
     file_ops = FileOps(package_manager, env_path)
     
     # Ask which files to update using questionary

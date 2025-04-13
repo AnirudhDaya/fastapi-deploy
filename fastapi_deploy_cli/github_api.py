@@ -3,7 +3,7 @@ GitHub API handler for FastAPI Deploy CLI.
 """
 import requests
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from fastapi_deploy_cli.config import Config
 
@@ -18,7 +18,6 @@ class GithubSecrets:
     def upload_secrets(self, repo: str, pat: str, env_path: str) -> Dict[str, Any]:
         """
         Upload secrets from .env file to GitHub repository.
-        Just forwards the file path to the API without parsing.
         
         Args:
             repo: GitHub repository in format 'username/repo-name'
@@ -26,14 +25,15 @@ class GithubSecrets:
             env_path: Path to .env file
             
         Returns:
-            API response as dictionary
+            API response as dictionary with added variables if successful
         """
         # Check if env file exists
         env_file = Path(env_path)
         if not env_file.exists():
             return {
                 "success": False,
-                "error": f"Environment file not found: {env_path}"
+                "error": f"Environment file not found: {env_path}",
+                "variables": []
             }
         
         try:
@@ -60,11 +60,28 @@ class GithubSecrets:
             except ValueError:
                 return {
                     "success": False,
-                    "error": f"Invalid JSON response: {response.text}"
+                    "error": f"Invalid JSON response: {response.text}",
+                    "variables": []
                 }
                 
         except Exception as e:
             return {
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "variables": []
             }
+    
+    def get_environment_variables(self, response: Dict[str, Any]) -> List[str]:
+        """
+        Get environment variables from API response.
+        
+        Args:
+            response: API response dictionary
+            
+        Returns:
+            List of environment variable names
+        """
+        if not response.get("success", False):
+            return []
+        
+        return response.get("variables", [])

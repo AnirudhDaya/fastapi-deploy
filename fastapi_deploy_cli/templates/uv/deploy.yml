@@ -49,26 +49,16 @@ jobs:
       - name: Build and deploy on server
         uses: appleboy/ssh-action@master
         env:
-          APP_NAME: ${{ secrets.APP_NAME }}
-          DEBUG_MODE: ${{ secrets.DEBUG_MODE }}
-          API_VERSION: ${{ secrets.API_VERSION }}
-          ENVIRONMENT: ${{ secrets.ENVIRONMENT }}
-          PORT: ${{ secrets.PORT }}
-          COMPOSE_PROJECT_NAME: "${{ env.REPO_NAME }}"
+          COMPOSE_PROJECT_NAME: "${{ env.REPO_NAME }}-test"
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: APP_NAME,DEBUG_MODE,API_VERSION,ENVIRONMENT,PORT,COMPOSE_PROJECT_NAME
+          envs: COMPOSE_PROJECT_NAME
           script: |
             cd /home/${{ secrets.SERVER_USER }}/${{ env.REPO_NAME }}
             
             # Export environment variables
-            export APP_NAME="${APP_NAME}"
-            export DEBUG_MODE="${DEBUG_MODE}"
-            export API_VERSION="${API_VERSION}"
-            export ENVIRONMENT="${ENVIRONMENT}"
-            export PORT="${PORT}"
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}"
             
             # Force removal of any existing containers for this project
@@ -88,9 +78,4 @@ jobs:
             docker inspect $(docker compose ps -q app) | grep -A 30 "Labels"
             
             # Clear environment variables
-            unset APP_NAME
-            unset DEBUG_MODE
-            unset API_VERSION
-            unset ENVIRONMENT
-            unset PORT
             unset COMPOSE_PROJECT_NAME

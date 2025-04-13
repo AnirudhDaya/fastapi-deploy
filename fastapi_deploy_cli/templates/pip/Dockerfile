@@ -3,22 +3,8 @@ FROM python:3.12-slim-bookworm
 WORKDIR /app
 
 # Define build arguments with default values
-ARG APP_NAME
-ARG DEBUG_MODE
-ARG API_VERSION
-ARG ENVIRONMENT
-ARG PORT
-ARG BUILD_ENV="production"
 
 # Set build-time environment variables
-ENV APP_NAME=$APP_NAME \
-    DEBUG_MODE=$DEBUG_MODE \
-    API_VERSION=$API_VERSION \
-    ENVIRONMENT=$ENVIRONMENT \
-    PORT=$PORT \
-    BUILD_ENV=$BUILD_ENV \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
 
 # Install dependencies directly in the final image
 COPY requirements.txt .
