@@ -2,17 +2,12 @@
 """
 FastAPI Deploy CLI - A tool for deploying FastAPI applications with ease.
 """
-import os
-import sys
-from pathlib import Path
-
 import click
 import questionary
 from questionary import Style
 from rich.console import Console
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 
-from fastapi_deploy_cli.config import Config
 from fastapi_deploy_cli.env_handler import EnvHandler
 from fastapi_deploy_cli.github_api import GithubSecrets
 from fastapi_deploy_cli.file_operations import FileOps
@@ -59,7 +54,6 @@ def init():
     )
     
     env_handler = EnvHandler(env_path)
-    
     if not env_handler.file_exists():
         console.print(f"[yellow]No .env file found at {env_path}.[/yellow]")
         console.print("[yellow]Please create an .env file at the specified path with the following variables:[/yellow]")
@@ -104,6 +98,23 @@ Required environment variables:
                 console.print("[red]Setup cancelled.[/red]")
                 return
     
+    # Step 2.5: Collect additional application settings
+    console.print("\n[bold]Step 2.5:[/bold] Application settings")
+    
+    # Ask for domain
+    domain = Prompt.ask(
+        "Enter domain for your application",
+        default="app.example.com"
+    )
+    
+    # Ask for port
+    port = Prompt.ask(
+        "Enter the port for your application",
+        default="8001"
+    )
+
+    console.print(f"[green]Updated environment file with domain and port settings[/green]")
+    
     # Step 3: Get GitHub repository info
     console.print("\n[bold]Step 3:[/bold] GitHub repository configuration")
     
@@ -127,7 +138,6 @@ Required environment variables:
     console.print("\n[bold]Step 4:[/bold] Adding environment variables to GitHub secrets")
     github_secrets = GithubSecrets()
     result = github_secrets.upload_secrets(repo, pat, env_path)
-    
     variables = []
     if result.get("success"):
         console.print("[green]Successfully added environment variables to GitHub secrets[/green]")
@@ -142,7 +152,7 @@ Required environment variables:
     
     # Step 5: Setup deployment files
     console.print("\n[bold]Step 5:[/bold] Setting up deployment files")
-    file_ops = FileOps(package_manager, env_path, variables)
+    file_ops = FileOps(package_manager, env_path, variables, domain, port)
     
     # Create necessary files
     dockerfile_result = file_ops.setup_dockerfile()
@@ -156,6 +166,8 @@ Required environment variables:
     console.print("\n[bold]Summary:[/bold]")
     console.print(f"🔧 Package manager: [cyan]{package_manager}[/cyan]")
     console.print(f"📄 Environment file: [cyan]{env_path}[/cyan]")
+    console.print(f"🌐 Domain: [cyan]{domain}[/cyan]")
+    console.print(f"🔌 Port: [cyan]{port}[/cyan]")
     console.print(f"🔗 GitHub repository: [cyan]{repo}[/cyan]")
     console.print(f"🔒 GitHub secrets uploaded: [cyan]{'✓' if result.get('success', False) else '✗'}[/cyan]")
     console.print(f"📦 Created deployment files:")
@@ -229,7 +241,7 @@ def update():
     
     if update_workflow:
         file_ops.setup_github_workflow()
-        console.print("[green]Updated GitHub Actions workflow file[/green]")
+        console.print("[green]Updated GitHub Actions workflow file[/green]")      
     
     console.print("\n[bold green]Update Complete![/bold green]")
 

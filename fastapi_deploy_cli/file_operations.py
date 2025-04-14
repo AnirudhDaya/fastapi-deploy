@@ -11,7 +11,8 @@ from fastapi_deploy_cli.env_handler import EnvHandler
 class FileOps:
     """Handles file operations for deployment setup."""
     
-    def __init__(self, package_manager: str = "uv", env_path: str = ".env", github_variables: List[str] = None):
+    def __init__(self, package_manager: str = "uv", env_path: str = ".env", github_variables: List[str] = None,
+                 domain: str = "domain.example.com", port: str = "8001"):
         """
         Initialize file operations.
         
@@ -19,12 +20,16 @@ class FileOps:
             package_manager: Package manager to use ('pip' or 'uv')
             env_path: Path to .env file
             github_variables: List of variables added to GitHub secrets
+            domain: Application domain
+            port: Application port
         """
         self.package_manager = package_manager
         self.env_path = env_path
         self.config = Config()
         self.templates_dir = self.config.get_templates_dir()
         self.github_variables = github_variables or []
+        self.domain = domain
+        self.port = port
         
         # Load environment variables if file exists
         self.env_handler = EnvHandler(env_path)
@@ -67,6 +72,16 @@ class FileOps:
         Returns:
             Modified Dockerfile content
         """
+        # Update the CMD port
+        if self.package_manager == "uv":
+            # Update CMD port for uv
+            cmd_pattern = r'CMD \["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"\]'
+            content = re.sub(cmd_pattern, f'CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{self.port}"]', content)
+        else:
+            # Update CMD port for pip
+            cmd_pattern = r'CMD \["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"\]'
+            content = re.sub(cmd_pattern, f'CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{self.port}"]', content)
+        
         if not self.additional_vars:
             return content
         
@@ -202,7 +217,7 @@ class FileOps:
     
     def _modify_docker_compose(self, content: str) -> str:
         """
-        Modify docker-compose.yml content to include all environment variables.
+        Modify docker-compose.yml content to include custom domain, port, and all environment variables.
         
         Args:
             content: Original docker-compose.yml content
@@ -210,6 +225,15 @@ class FileOps:
         Returns:
             Modified docker-compose.yml content
         """
+        # Replace domain.example.com with the custom domain
+        content = content.replace("domain.example.com", self.domain)
+        
+        # Replace port 8001 with the custom port in all places
+        content = re.sub(r'(\s*-\s*)"8001:8000"', f'\\1"{self.port}:8000"', content)
+        content = re.sub(r'(\s*-\s*)"traefik\.http\.services\.\${COMPOSE_PROJECT_NAME:-app}\.loadbalancer\.server\.port=8001"', 
+                        f'\\1"traefik.http.services.${{COMPOSE_PROJECT_NAME:-app}}.loadbalancer.server.port={self.port}"', 
+                        content)
+        
         if not self.additional_vars:
             return content
             
@@ -316,7 +340,7 @@ class FileOps:
                 content = f.read()
             
             # Modify content if modifier function is provided
-            if modifier_func and self.additional_vars:
+            if modifier_func:
                 content = modifier_func(content)
             
             # Write content to target path
