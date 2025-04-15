@@ -2,8 +2,13 @@ name: Deploy FastAPI App
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:  # Allow manual triggering
+
+# Add permissions to the GITHUB_TOKEN
+permissions:
+  contents: write
+  pull-requests: write  
 
 jobs:
   deploy:

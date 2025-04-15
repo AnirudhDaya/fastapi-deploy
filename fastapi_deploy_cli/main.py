@@ -112,6 +112,41 @@ Required environment variables:
         "Enter the port for your application",
         default="8001"
     )
+    
+    # Ask for branch name
+    branch_name = Prompt.ask(
+        "Enter the branch name for your application",
+        default="main"
+    )
+
+    # Ask if user wants a production branch
+    console.print("\n[bold]Step 2.6:[/bold] Branch configuration")
+    production_branch = questionary.confirm(
+        "Do you want to set up a production branch?",
+        default=True,
+        style=get_questionary_style()
+    ).ask()
+    
+    # Initialize production-specific variables
+    prod_domain = None
+    prod_port = None
+    
+    if production_branch:      
+        # Ask for production domain
+        prod_domain = Prompt.ask(
+            "Enter domain for your production deployment",
+            default=f"prod-{domain}"
+        )
+        
+        # Ask for production port
+        prod_port = Prompt.ask(
+            "Enter the port for your production deployment",
+            default="8002"
+        )
+        
+        console.print(f"[green]Production branch will be configured with domain '{prod_domain}' on port {prod_port}[/green]")
+    else:
+        console.print("[yellow]No production branch will be configured[/yellow]")
 
     console.print(f"[green]Updated environment file with domain and port settings[/green]")
     
@@ -152,12 +187,23 @@ Required environment variables:
     
     # Step 5: Setup deployment files
     console.print("\n[bold]Step 5:[/bold] Setting up deployment files")
-    file_ops = FileOps(package_manager, env_path, variables, domain, port)
+    file_ops = FileOps(
+        package_manager, 
+        env_path, 
+        variables, 
+        domain, 
+        port, 
+        branch_name,
+        production_branch=production_branch,
+        production_domain=prod_domain,
+        production_port=prod_port
+    )
     
     # Create necessary files
     dockerfile_result = file_ops.setup_dockerfile()
     compose_result = file_ops.setup_docker_compose()
     workflow_result = file_ops.setup_github_workflow()
+    prod_workflow_result = file_ops.setup_production_workflow()
     
     # Complete
     console.print("\n[bold green]Setup Complete![/bold green]")
@@ -169,81 +215,19 @@ Required environment variables:
     console.print(f"🌐 Domain: [cyan]{domain}[/cyan]")
     console.print(f"🔌 Port: [cyan]{port}[/cyan]")
     console.print(f"🔗 GitHub repository: [cyan]{repo}[/cyan]")
+    console.print(f"🌿 Production branch: [cyan]{'Yes - ' if production_branch else 'No'}[/cyan]")
     console.print(f"🔒 GitHub secrets uploaded: [cyan]{'✓' if result.get('success', False) else '✗'}[/cyan]")
     console.print(f"📦 Created deployment files:")
     console.print(f"   - [cyan]Dockerfile[/cyan] {'✓' if dockerfile_result else '✗'}")
     console.print(f"   - [cyan]docker-compose.yml[/cyan] {'✓' if compose_result else '✗'}")
     console.print(f"   - [cyan].github/workflows/deploy.yml[/cyan] {'✓' if workflow_result else '✗'}")
-    
+    console.print(f"   - [cyan].github/workflows/deploy-prod.yml[/cyan] {'✓' if prod_workflow_result else '✗'}")
+
     # Next steps
     console.print("\n[bold]Next steps:[/bold]")
     console.print("1. Commit and push your code to GitHub 🚀")
     console.print("2. Monitor GitHub Actions for deployment progress 📊")
     console.print("3. Your app will be deployed to your server automatically 🎉\n")
-
-@cli.command()
-def update():
-    """Update deployment files."""
-    console.print("\n[bold blue]FastAPI Deploy CLI[/bold blue] - Update your deployment configuration\n")
-    
-    # Choose the package manager
-    package_manager = questionary.select(
-        "Select package manager to update configuration for:",
-        choices=["pip", "uv"],
-        default="uv",
-        style=get_questionary_style()
-    ).ask()
-    
-    # Ask for environment file path
-    env_path = Prompt.ask(
-        "Enter path to your .env file",
-        default=".env"
-    )
-    
-    # Check if env file exists
-    env_handler = EnvHandler(env_path)
-    if not env_handler.file_exists():
-        console.print(f"[yellow]Warning: No .env file found at {env_path}. Continuing anyway.[/yellow]")
-    else:
-        console.print(f"[green]Found .env file at {env_path}[/green]")
-    
-    # Create file operations handler
-    # We'll pass an empty variables list - FileOps will handle the templates without additional vars
-    file_ops = FileOps(package_manager, env_path)
-    
-    # Ask which files to update using questionary
-    update_dockerfile = questionary.confirm(
-        "Update Dockerfile?", 
-        default=True,
-        style=get_questionary_style()
-    ).ask()
-    
-    update_compose = questionary.confirm(
-        "Update docker-compose.yml?", 
-        default=True,
-        style=get_questionary_style()
-    ).ask()
-    
-    update_workflow = questionary.confirm(
-        "Update GitHub Actions workflow file?", 
-        default=True,
-        style=get_questionary_style()
-    ).ask()
-    
-    # Update files as requested
-    if update_dockerfile:
-        file_ops.setup_dockerfile()
-        console.print("[green]Updated Dockerfile[/green]")
-    
-    if update_compose:
-        file_ops.setup_docker_compose()
-        console.print("[green]Updated docker-compose.yml[/green]")
-    
-    if update_workflow:
-        file_ops.setup_github_workflow()
-        console.print("[green]Updated GitHub Actions workflow file[/green]")      
-    
-    console.print("\n[bold green]Update Complete![/bold green]")
 
 if __name__ == "__main__":
     cli()

@@ -1,14 +1,13 @@
-name: Deploy FastAPI App
+name: Deploy to Production Environment
 
 on:
   push:
-    branches: [ main ]
+    branches: [ prod ]
   workflow_dispatch:  # Allow manual triggering
 
-# Add permissions to the GITHUB_TOKEN
+# Set permissions for the GITHUB_TOKEN
 permissions:
-  contents: write
-  pull-requests: write  
+  contents: read
 
 jobs:
   deploy:
@@ -22,7 +21,7 @@ jobs:
       
       - name: Get repository name
         id: repo-name
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+        run: echo "REPO_NAME=\${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
       
       - name: Prepare files for deployment
         run: |
@@ -34,34 +33,39 @@ jobs:
       - name: Create project directory on server
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: \${{ secrets.SERVER_HOST }}
+          username: \${{ secrets.SERVER_USER }}
+          key: \${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            mkdir -p /home/${{ secrets.SERVER_USER }}/${{ env.REPO_NAME }}-test
+            mkdir -p /home/ssw/\${{ env.REPO_NAME }}-prod
       
       - name: Copy project files to server
         uses: appleboy/scp-action@master
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: \${{ secrets.SERVER_HOST }}
+          username: \${{ secrets.SERVER_USER }}
+          key: \${{ secrets.SSH_PRIVATE_KEY }}
           source: "deploy/*"
-          target: "/home/${{ secrets.SERVER_USER }}/${{ env.REPO_NAME }}-test"
+          target: "/home/ssw/\${{ env.REPO_NAME }}-prod"
           rm: true  # Remove old files in the target directory
           strip_components: 1  # Remove the 'deploy' directory prefix
       
-      - name: Build and deploy on test server
+      - name: Build and deploy on production server
         uses: appleboy/ssh-action@master
         env:
-          COMPOSE_PROJECT_NAME: "${{ env.REPO_NAME }}-test"
+          COMPOSE_PROJECT_NAME: "${{ env.REPO_NAME }}-prod"
+          APP_NAME: ${{ secrets.APP_NAME }}
+          DEBUG_MODE: ${{ secrets.DEBUG_MODE }}
+          API_VERSION: ${{ secrets.API_VERSION }}
+          ENVIRONMENT: ${{ secrets.ENVIRONMENT }}
+          PORT: ${{ secrets.PORT }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: COMPOSE_PROJECT_NAME
+          envs: COMPOSE_PROJECT_NAME,APP_NAME,DEBUG_MODE,API_VERSION,ENVIRONMENT,PORT
           script: |
-            cd /home/${{ secrets.SERVER_USER }}/${{ env.REPO_NAME }}-test
+            cd /home/${{ secrets.SERVER_USER }}/${{ env.REPO_NAME }}-prod
             
             # Export environment variables
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}"

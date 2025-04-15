@@ -12,7 +12,8 @@ class FileOps:
     """Handles file operations for deployment setup."""
     
     def __init__(self, package_manager: str = "uv", env_path: str = ".env", github_variables: List[str] = None,
-                 domain: str = "domain.example.com", port: str = "8001"):
+                 domain: str = "domain.example.com", port: str = "8001", branch_name: str = "main", production_branch: bool = False,
+        production_domain: Optional[str] = None, production_port: Optional[str] = None):
         """
         Initialize file operations.
         
@@ -22,6 +23,10 @@ class FileOps:
             github_variables: List of variables added to GitHub secrets
             domain: Application domain
             port: Application port
+            branch_name: Name of the branch
+            production_branch: Whether to set up a production branch
+            production_domain: Domain for production deployment (if production_branch is True)
+            production_port: Port for production deployment (if production_branch is True)
         """
         self.package_manager = package_manager
         self.env_path = env_path
@@ -30,6 +35,10 @@ class FileOps:
         self.github_variables = github_variables or []
         self.domain = domain
         self.port = port
+        self.branch_name = branch_name
+        self.production_branch = production_branch
+        self.production_domain = production_domain if production_branch else None
+        self.production_port = production_port if production_branch else None
         
         # Load environment variables if file exists
         self.env_handler = EnvHandler(env_path)
@@ -263,7 +272,8 @@ class FileOps:
     
     def _modify_workflow(self, content: str) -> str:
         """
-        Modify GitHub Actions workflow content to include all environment variables.
+        Modify GitHub Actions workflow content to include all environment variables
+        and add production branch support if enabled.
         
         Args:
             content: Original workflow content
@@ -271,10 +281,13 @@ class FileOps:
         Returns:
             Modified workflow content
         """
-        if not self.additional_vars:
+        # Replace main with the specified branch name
+        content = re.sub(r'branches: \[ main(?:, [^\]]+)? \]', f'branches: [ {self.branch_name} ]', content)
+        
+        # Add environment variables to env section
+        if not self.additional_vars and not self.production_branch:
             return content
             
-        # Add environment variables to env section
         if "env:" in content:
             env_pattern = r"(env:(?:\s*[A-Z_]+:[^\n]*)*)"
             env_lines = "\n" + "\n".join([f"          {var}: ${{{{ secrets.{var} }}}}" for var in self.additional_vars])
@@ -318,6 +331,196 @@ class FileOps:
                 content
             )
         
+        # Add production branch job if needed
+        if self.production_branch and "create-pr:" not in content:
+            # Find the end of the deploy job
+            deploy_job_end = content.find("  # Clear environment variables\n            unset COMPOSE_PROJECT_NAME")
+            if deploy_job_end != -1:
+                deploy_job_end = content.find("\n", deploy_job_end + 60)  # Move past the unset line
+                
+                # Add the create-pr job
+                create_pr_job = f"""
+
+  create-pr:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout {self.branch_name}
+        uses: actions/checkout@v3
+        with:
+          ref: {self.branch_name}
+          token: ${{{{ secrets.PAT }}}}
+      
+      - name: Set up Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+      
+      - name: Check if prod branch exists
+        id: check-branch
+        run: |
+          if git ls-remote --heads origin prod | grep prod; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create prod branch if it doesn't exist
+        if: steps.check-branch.outputs.exists == 'false'
+        run: |
+          git checkout -b prod
+          git push origin prod
+      
+      - name: Modify docker-compose for production
+        id: modify-domain
+        run: |
+          # Update the domain in docker-compose.yml to production
+          if [ -f "docker-compose.yml" ]; then
+            # Replace test domain with production domain
+            sed -i 's/`{self.domain}`/`{self.production_domain}`/g' docker-compose.yml
+            
+            # Update the port from {self.port}:8000 to {self.production_port}:8000 for production
+            sed -i 's/"{self.port}:8000"/"{self.production_port}:8000"/g' docker-compose.yml
+             
+            # Update the traefik service port from {self.port} to {self.production_port}
+            sed -i 's/loadbalancer\\.server\\.port={self.port}/loadbalancer.server.port={self.production_port}/g' docker-compose.yml
+            
+            # Check if the file was actually modified
+            if git diff --quiet docker-compose.yml; then
+              echo "No changes found in docker-compose.yml"
+              echo "changes_made=false" >> $GITHUB_OUTPUT
+            else
+              echo "Domain and port updated to production in docker-compose.yml"
+              echo "changes_made=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "docker-compose.yml not found!"
+            echo "changes_made=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Create PR for domain changes
+        if: steps.modify-domain.outputs.changes_made == 'true'
+        uses: peter-evans/create-pull-request@v4
+        with:
+          token: ${{{{ secrets.PAT }}}}
+          commit-message: Update domain and port for production
+          title: Deploy to Production
+          body: |
+            This PR updates the configuration for production deployment:
+            
+            - Changed domain to production ({self.production_domain})
+            - Updated port mapping from {self.port}:8000 to {self.production_port}:8000
+            
+            This PR was automatically created after a successful test deployment.
+          branch: update-to-prod
+          branch-suffix: timestamp
+          delete-branch: true
+          base: prod
+          
+      - name: Fetch prod branch for comparison
+        run: |
+          git fetch origin prod || true
+          
+      - name: Check for code changes beyond domain
+        id: check-changes
+        run: |
+          if git ls-remote --heads origin prod | grep -q prod; then
+            # Compare {self.branch_name} and prod branches excluding docker-compose.yml
+            OTHER_CHANGES=$(git diff --name-only origin/{self.branch_name} origin/prod | grep -v "docker-compose.yml" || true)
+            
+            if [ -n "$OTHER_CHANGES" ]; then
+              echo "Other files have changes beyond docker-compose.yml"
+              echo "has_other_changes=true" >> $GITHUB_OUTPUT
+              echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
+              echo "$OTHER_CHANGES" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+            else
+              echo "No other changes between branches beyond docker-compose.yml"
+              echo "has_other_changes=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Prod branch doesn't exist yet for comparison"
+            echo "has_other_changes=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create PR with all code changes
+        if: steps.check-changes.outputs.has_other_changes == 'true'
+        uses: peter-evans/create-pull-request@v4
+        with:
+          token: ${{{{ secrets.PAT }}}}
+          commit-message: Sync all changes from {self.branch_name} to prod
+          title: Sync all changes from {self.branch_name} to production
+          body: |
+            This PR includes all changes from {self.branch_name} branch ready for production deployment.
+            
+            Changed files include:
+            ${{{{ env.CHANGED_FILES }}}}
+          branch: sync-all-changes
+          branch-suffix: timestamp
+          delete-branch: true
+          base: prod
+"""
+                content = content[:deploy_job_end+1] + create_pr_job
+        
+        return content
+    
+    def _modify_production_workflow(self, content: str) -> str:
+        """
+        Modify GitHub Actions production workflow content.
+        
+        Args:
+            content: Original workflow content
+            
+        Returns:
+            Modified workflow content
+        """
+        # Add environment variables to env section
+        if not self.additional_vars and not self.production_branch:
+            return content
+            
+        if "env:" in content:
+            env_pattern = r"(env:(?:\s*[A-Z_]+:[^\n]*)*)"
+            env_lines = "\n" + "\n".join([f"          {var}: ${{{{ secrets.{var} }}}}" for var in self.additional_vars])
+            
+            content = re.sub(
+                env_pattern,
+                f"\\1{env_lines}",
+                content
+            )
+        
+        # Add variables to envs parameter
+        if "envs:" in content:
+            envs_pattern = r"(envs:\s*[^,\n]*(?:,[^,\n]*)*)"
+            additional_envs = "," + ",".join(self.additional_vars)
+            
+            content = re.sub(
+                envs_pattern,
+                f"\\1{additional_envs}",
+                content
+            )
+        
+        # Add export statements
+        if "# Export environment variables" in content:
+            export_pattern = r"(# Export environment variables\s*\n(?:\s*export [A-Z_]+=[^\n]*\n)*)"
+            export_lines = "\n".join([f'            export {var}="${{{var}}}"' for var in self.additional_vars])
+            
+            content = re.sub(
+                export_pattern,
+                f"\\1{export_lines}\n",
+                content
+            )
+        
+        # Add unset statements
+        if "# Clear environment variables" in content:
+            unset_pattern = r"(# Clear environment variables\s*\n(?:\s*unset [A-Z_]+\n)*)"
+            unset_lines = "\n".join([f"            unset {var}" for var in self.additional_vars])
+            
+            content = re.sub(
+                unset_pattern,
+                f"\\1{unset_lines}\n",
+                content
+            )
         return content
     
     def _copy_and_modify_template(self, template_name: str, target_path: Path, modifier_func=None) -> bool:
@@ -379,3 +582,13 @@ class FileOps:
         """
         workflow_path = self.workflows_dir / "deploy.yml"
         return self._copy_and_modify_template("deploy.yml", workflow_path, self._modify_workflow)
+    
+    def setup_production_workflow(self) -> bool:
+        """
+        Set up GitHub Actions production workflow file with all environment variables.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        workflow_path = self.workflows_dir / "deploy-prod.yml"
+        return self._copy_and_modify_template("deploy-prod.yml", workflow_path, self._modify_production_workflow)
